@@ -4,6 +4,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <vector>
+#include <iomanip>
 
 // C and POSIX headers
 #include <errno.h>
@@ -393,15 +394,14 @@ void shoot(Player &me, Player &other)
 
     std::string line;
     bool treffer;
+    int i, j;
     for (bool ok = false; !ok;) {
-        if (am_human)
-            std::cerr << "Spieler " << me.which() << " - Zielfeld eingeben: ";
+        std::cerr << "Spieler " << me.which() << " - Zielfeld eingeben: ";
         line = me.prompt();
         if (line.empty())
             continue;
 
         std::istringstream linestr(line);
-        int i, j;
         linestr >> i >> j >> std::ws;
         try {
             if (!linestr.eof() || linestr.fail()) {
@@ -423,13 +423,18 @@ void shoot(Player &me, Player &other)
             }
         }
     }
-
-    if (!me.alive())
+    if (!am_human) {
+        std::cerr << i << " " << j
+            << (treffer ? " - TREFFER!" : " - daneben.")
+            << (other.is_machine() && me.which() == 'A' ? "  ---  " : "\n");
+    }
+    if (!me.alive()) {
         me.send('L');
-    else if (treffer)
+    } else if (treffer) {
         me.send(other.alive() ? 'T' : 'W');
-    else
+    } else {
         me.send('F');
+    }
 }
 
 int main(int argc, char *argv[])
@@ -471,13 +476,14 @@ int main(int argc, char *argv[])
 
     std::cerr << "\nLos gehts!\n";
     // shootout phase
-    for (int move = 0; player_a.alive() && player_b.alive(); ++move) {
-        if (move == 100) {
+    for (int move = 1; player_a.alive() && player_b.alive(); ++move) {
+        if (move == 101) {
             std::cerr << "100 Züge gespielt - das ist genug.\n";
             player_a.die();
             player_b.die();
             break;
         }
+        std::cerr << "Zug " << std::setw(3) << move << ": ";
         try {
             shoot(player_a, player_b);
         } catch(const std::runtime_error &e) {
