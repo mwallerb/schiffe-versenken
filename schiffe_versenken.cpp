@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -108,6 +109,45 @@ public:
 
     bool started() const { return _child_pid >= 0; }
 
+    std::string getline(int maxlen=200, int timeout=2000) const {
+        for(int tries=0; tries != 3; ++tries) {
+            size_t linesize = _buffer.find('\n');
+            if (linesize != std::string::npos) {
+                std::string line = _buffer.substr(0, linesize+1);
+                _buffer = _buffer.substr(linesize+1);
+                return line;
+            }
+
+            pollfd poll_info;
+            poll_info.fd = _fd_from_child;
+            poll_info.events = POLLIN;
+
+            // The process has not returned any data :(
+            if (checked(poll(&poll_info, 1, timeout)) == 0) {
+                throw std::runtime_error(
+                    "Timeout: das Spieler-Programm hat innerhalb einiger Zeit "
+                    "keine Zeile geschrieben");
+            }
+
+            char buffer[maxlen+1];
+            int nbytes = read(_fd_from_child, buffer, maxlen);
+            if (nbytes <= 0) {
+                throw std::runtime_error(
+                    "Das Spieler-Programm ist wahrscheinlich abgestürzt "
+                    "oder ist zu frueh fertig");
+            }
+            buffer[nbytes] = 0;
+            _buffer += std::string(buffer);
+            return getline(maxlen, timeout);
+        }
+        throw std::runtime_error(
+                        "Das Spieler-Programm gibt zu lange Zeilen aus");
+    }
+
+    void send(const std::string &input) const {
+        checked(write(_fd_to_child, input.c_str(), input.size() + 1));
+    }
+
     int from_child_fd() const { return _fd_from_child; }
 
     int to_child_fd() const { return _fd_to_child; }
@@ -120,6 +160,7 @@ private:
 
     pid_t _child_pid;
     int _fd_from_child, _fd_to_child;
+    mutable std::string _buffer;
 };
 
 class Player
@@ -137,6 +178,8 @@ public:
 
     bool is_machine() const { return _child.started(); }
 
+    void die() { _live = 0; }
+
     bool alive() const { return _live > 0; }
 
     char which() const { return _which; }
@@ -145,8 +188,7 @@ public:
 
     std::string prompt() const {
         if (is_machine()) {
-            //FIXME
-            return "";
+            return _child.getline();
         } else {
             std::string line;
             if (!getline(std::cin, line)) {
@@ -159,8 +201,8 @@ public:
 
     void send(char c) const {
         if (is_machine()) {
-            //FIXME
-            return;
+            char msg[3] = {c, '\n', '\0'};
+            _child.send(std::string(msg));
         } else {
             std::cout << c << std::endl;
         }
@@ -298,7 +340,8 @@ void place(Player &me)
 
         std::string line;
         for (bool ok = false; !ok;) {
-            std::cerr << "Schiff #" << ship << " eingeben: ";
+            std::cerr << "Spieler " << me.which()
+                      << " - Schiff #" << ship << " eingeben: ";
             line = me.prompt();
             if (line.empty())
                 continue;
@@ -321,10 +364,13 @@ void place(Player &me)
                 }
                 me.place(i, j, 4, c == 'U');
                 ok = true;
+                if (!am_human)
+                    std::cerr << "[Erfolgreich eigegeben, aber geheim]\n";
             } catch(const std::runtime_error &e) {
-                std::cerr << "Eingabefehler Spieler " << me.which() << ":\n"
-                          << e.what() << std::endl;
-                if (!am_human) {
+                if (am_human) {
+                    std::cerr << "Eingabefehler Spieler " << me.which() << ":\n"
+                              << e.what() << std::endl;
+                } else {
                     std::cerr << "\nBisher gesetzt:\n";
                     print_boards(std::cerr, me, dummy, false);
                     std::cerr << "\nEingeben wurde:\n" << line;
@@ -348,7 +394,8 @@ void shoot(Player &me, Player &other)
     std::string line;
     bool treffer;
     for (bool ok = false; !ok;) {
-        std::cerr << "Zielfeld eingeben: ";
+        if (am_human)
+            std::cerr << "Spieler " << me.which() << " - Zielfeld eingeben: ";
         line = me.prompt();
         if (line.empty())
             continue;
@@ -403,43 +450,52 @@ int main(int argc, char *argv[])
         std::cerr << "Fehler: " << e.what() << std::endl;
         return 3;
     }
-    bool both_ai = player_a.is_machine() && player_b.is_machine();
 
     // placement phase
     std::cerr << "\nSpieler A setzt Schiffe:\n";
     try {
         place(player_a);
     } catch(const std::runtime_error &e) {
-        std::cerr << "Spieler B hat gewonnen! (Illegale Platzierung von A)\n";
+        std::cerr << "\n\n" << e.what()
+                  << "\nSpieler B hat gewonnen! (Illegale Platzierung von A)\n";
         return 2;
     }
     std::cerr << "\nSpieler B setzt Schiffe:\n";
     try {
         place(player_b);
     } catch(const std::runtime_error &e) {
-        std::cerr << "Spieler A hat gewonnen! (Illegale Platzierung von B)\n";
+        std::cerr << "\n\n" << e.what()
+                  << "\nSpieler A hat gewonnen! (Illegale Platzierung von B)\n";
         return 1;
     }
-    if (both_ai)
-        print_boards(std::cerr, player_a, player_b, true);
 
+    std::cerr << "\nLos gehts!\n";
     // shootout phase
-    do {
+    for (int move = 0; player_a.alive() && player_b.alive(); ++move) {
+        if (move == 100) {
+            std::cerr << "100 Züge gespielt - das ist genug.\n";
+            player_a.die();
+            player_b.die();
+            break;
+        }
         try {
             shoot(player_a, player_b);
         } catch(const std::runtime_error &e) {
-            std::cerr << "Spieler B hat gewonnen! (Illegaler Zug von A)\n";
-            return 2;
+            std::cerr << "\n\n" << e.what() << "\nIllegale Aktion von A\n";
+            player_a.die();
+            break;
         }
         try {
             shoot(player_b, player_a);
         } catch(const std::runtime_error &e) {
-            std::cerr << "Spieler A hat gewonnen! (Illegaler Zug von B)\n";
-            return 1;
+            std::cerr << "\n\n" << e.what() << "\nIllegaler Aktion von B\n";
+            player_b.die();
+            break;
         }
-    } while (player_a.alive() && player_b.alive());
+    }
 
     // scoring
+    print_boards(std::cerr, player_a, player_b, true);
     if (player_a.alive()) {
         std::cerr << "Spieler A hat gewonnen!\n";
         return 1;

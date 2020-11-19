@@ -4,5 +4,7 @@
 !.gitignore
 
 a.out
+schiffe_versenken
+test_ki
 
 *.kdev4
