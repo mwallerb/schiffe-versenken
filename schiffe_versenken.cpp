@@ -5,6 +5,7 @@
 
 // C and POSIX headers
 #include <errno.h>
+#include <fcntl.h>
 #include <signal.h>
 #include <string.h>
 #include <unistd.h>
@@ -34,13 +35,17 @@ public:
 
     ChildProcess(std::string name) {
         // First, make pipes: pipe[0] <--- pipe[1]
-        int to_child[2], from_child[2];
+        int to_child[2], from_child[2], safety_pipe[2];
+        char errormsg[100];
+
         checked(pipe(to_child));
         checked(pipe(from_child));
+        checked(pipe(safety_pipe));
+        checked(fcntl(safety_pipe[1], F_SETFD, FD_CLOEXEC));
 
         // Then, fork
-        pid_t child_pid = checked(fork());
-        if (child_pid == 0) {
+        _child_pid = checked(fork());
+        if (_child_pid == 0) {
             // on child
             checked(dup2(to_child[0], STDIN_FILENO));
             checked(dup2(from_child[1], STDOUT_FILENO));
@@ -49,10 +54,10 @@ public:
             checked(close(from_child[0]));
             checked(close(from_child[1]));
             execl(name.c_str(), name.c_str(), NULL);
+
             // This will only be reached if exec fails
-            // TODO: notify the parent here somehow
-            std::cerr << "Fehler beim Ausführen von '" << name << "': "
-                      << strerror(errno) << std::endl;
+            strncpy(errormsg, strerror(errno), sizeof(errormsg));
+            write(safety_pipe[1], errormsg, sizeof(errormsg));
             exit(47);
         }
 
@@ -61,6 +66,13 @@ public:
         monitored(close(from_child[1]));
         _fd_from_child = from_child[0];
         _fd_to_child = to_child[1];
+
+        if (read(safety_pipe[0], errormsg, sizeof(errormsg)) > 0) {
+            monitored(close(_fd_from_child));
+            monitored(close(_fd_to_child));
+            throw std::runtime_error(
+                    "Fehler beim Ausführen von '" + name + "': " + errormsg);
+        }
     }
 
     ~ChildProcess() {
@@ -79,9 +91,9 @@ public:
         std::swap(left._fd_to_child, right._fd_to_child);
     }
 
-    int from_child() const { return _fd_from_child; }
+    int from_child_fd() const { return _fd_from_child; }
 
-    int to_child() const { return _fd_to_child; }
+    int to_child_fd() const { return _fd_to_child; }
 
     int child_pid() const { return _child_pid; }
 
