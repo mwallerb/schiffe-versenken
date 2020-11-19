@@ -6,6 +6,7 @@
 // C and POSIX headers
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <signal.h>
 #include <string.h>
 #include <unistd.h>
@@ -41,6 +42,7 @@ public:
         checked(pipe(to_child));
         checked(pipe(from_child));
         checked(pipe(safety_pipe));
+        checked(fcntl(safety_pipe[0], F_SETFD, FD_CLOEXEC));
         checked(fcntl(safety_pipe[1], F_SETFD, FD_CLOEXEC));
 
         // Then, fork
@@ -67,7 +69,11 @@ public:
         _fd_from_child = from_child[0];
         _fd_to_child = to_child[1];
 
-        if (read(safety_pipe[0], errormsg, sizeof(errormsg)) > 0) {
+        pollfd poll_info;
+        poll_info.fd = safety_pipe[0];
+        poll_info.events = POLLIN;
+        if (checked(poll(&poll_info, 1, 100)) > 0) {
+            monitored(read(safety_pipe[0], errormsg, sizeof(errormsg)));
             monitored(close(_fd_from_child));
             monitored(close(_fd_to_child));
             throw std::runtime_error(
@@ -91,6 +97,8 @@ public:
         std::swap(left._fd_to_child, right._fd_to_child);
     }
 
+    bool started() const { return _child_pid >= 0; }
+
     int from_child_fd() const { return _fd_from_child; }
 
     int to_child_fd() const { return _fd_to_child; }
@@ -108,26 +116,16 @@ private:
 class Player
 {
 public:
-    Player(char which) : _which(which) { }
+    Player(char which, ChildProcess &&child = ChildProcess())
+        : _which(which)
+        , _child(std::move(child))
+    { }
 
     char which() const { return _which; }
 
 private:
     char _which;
-};
-
-typedef std::unique_ptr<Player> PlayerPtr;
-
-class Human : public Player
-{
-public:
-    Human(char which) : Player(which) { }
-};
-
-class Machine : public Player
-{
-public:
-    Machine (char which) : Player(which) { }
+    ChildProcess _child;
 };
 
 void print_usage(std::string name)
@@ -139,19 +137,20 @@ void print_usage(std::string name)
               << "    - './PROGRAMMNAME': Spieler ist ein Programm\n";
 }
 
-PlayerPtr make_player(std::string spec, char which)
+Player make_player(std::string spec, char which)
 {
-    if (spec == "mensch")
-        return PlayerPtr(new Human(which));
-
+    std::cerr << "Spieler " << which;
+    if (spec == "mensch") {
+        std::cerr << " ist ein Mensch ...\n";
+        return Player(which);
+    }
     if (spec.find('/') == std::string::npos) {
         throw std::runtime_error(
                 "Programm '" + spec + "' muss ausführbarer Pfad sein.\n"
                 "(Vielleicht ist ./" + spec + " gemeint?)\n");
     }
-    ChildProcess child(spec);
-
-    return PlayerPtr(new Machine(which));
+    std::cerr << " ist das Programm `" << spec << "', starte dieses ...\n";
+    return Player(which, ChildProcess(spec));
 }
 
 int main(int argc, char *argv[])
@@ -165,15 +164,18 @@ int main(int argc, char *argv[])
 
     // create players
     try {
-        PlayerPtr player_a = make_player(args[1], 'A');
-        PlayerPtr player_b = make_player(args[2], 'B');
+        Player player_a = make_player(args[1], 'A');
+        Player player_b = make_player(args[2], 'B');
     } catch(const std::runtime_error &e) {
         std::cerr << "Fehler: " << e.what() << std::endl;
         return 3;
     }
 
+    std::cerr << "\nSpieler bereit, Spiel startet!\n";
 
+    // ...
 
+    std::cerr << "Ende\n";
     return 0;
 }
 
