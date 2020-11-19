@@ -145,6 +145,7 @@ public:
 
     std::string prompt() const {
         if (is_machine()) {
+            //FIXME
             return "";
         } else {
             std::string line;
@@ -158,6 +159,7 @@ public:
 
     void send(char c) const {
         if (is_machine()) {
+            //FIXME
             return;
         } else {
             std::cout << c << std::endl;
