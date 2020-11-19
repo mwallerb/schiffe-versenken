@@ -95,6 +95,7 @@ public:
             monitored(waitpid(_child_pid, NULL, 0));
     }
 
+    // copy-and-swap idiom
     ChildProcess(ChildProcess &&other) : ChildProcess() { swap(*this, other); }
 
     ChildProcess &operator=(ChildProcess &&other) { swap(*this, other); return *this; }
@@ -322,7 +323,9 @@ void place(Player &me)
                 std::cerr << "Eingabefehler Spieler " << me.which() << ":\n"
                           << e.what() << std::endl;
                 if (!am_human) {
-                    std::cerr << "Eingeben wurde: " << line;
+                    std::cerr << "\nBisher gesetzt:\n";
+                    print_boards(std::cerr, me, dummy, false);
+                    std::cerr << "\nEingeben wurde:\n" << line;
                     throw;
                 }
             }
@@ -332,6 +335,53 @@ void place(Player &me)
         print_boards(std::cerr, me, dummy, false);
 }
 
+void shoot(Player &me, Player &other)
+{
+    bool am_human = !me.is_machine();
+
+    // Be nice to humans
+    if (am_human)
+        print_boards(std::cerr, me, other, false);
+
+    std::string line;
+    bool treffer;
+    for (bool ok = false; !ok;) {
+        std::cerr << "Zielfeld eingeben: ";
+        line = me.prompt();
+        if (line.empty())
+            continue;
+
+        std::istringstream linestr(line);
+        int i, j;
+        linestr >> i >> j >> std::ws;
+        try {
+            if (!linestr.eof() || linestr.fail()) {
+                throw std::runtime_error(
+                    "Ungueltige Eingabe - erwarte eine Zeile der Form:\n\n"
+                    "   zeile spalte\n\n"
+                    "zeile, spalte kann eine Zahl von 0-9 sein");
+            }
+            treffer = other.incoming(i, j);
+            ok = true;
+        } catch(const std::runtime_error &e) {
+            std::cerr << "Eingabefehler Spieler " << me.which() << ":\n"
+                        << e.what() << std::endl;
+            if (!am_human) {
+                std::cerr << "\nJetziges Feld:\n";
+                print_boards(std::cerr, me, other, true);
+                std::cerr << "\nEingeben wurde:\n" << line;
+                throw;
+            }
+        }
+    }
+
+    if (!me.alive())
+        me.send('L');
+    else if (treffer)
+        me.send(other.alive() ? 'T' : 'W');
+    else
+        me.send('F');
+}
 
 int main(int argc, char *argv[])
 {
@@ -353,15 +403,49 @@ int main(int argc, char *argv[])
     }
     bool both_ai = player_a.is_machine() && player_b.is_machine();
 
+    // placement phase
     std::cerr << "\nSpieler A setzt Schiffe:\n";
-    place(player_a);
+    try {
+        place(player_a);
+    } catch(const std::runtime_error &e) {
+        std::cerr << "Spieler B hat gewonnen! (Illegale Platzierung von A)\n";
+        return 2;
+    }
     std::cerr << "\nSpieler B setzt Schiffe:\n";
-    place(player_b);
+    try {
+        place(player_b);
+    } catch(const std::runtime_error &e) {
+        std::cerr << "Spieler A hat gewonnen! (Illegale Platzierung von B)\n";
+        return 1;
+    }
     if (both_ai)
         print_boards(std::cerr, player_a, player_b, true);
 
+    // shootout phase
+    do {
+        try {
+            shoot(player_a, player_b);
+        } catch(const std::runtime_error &e) {
+            std::cerr << "Spieler B hat gewonnen! (Illegaler Zug von A)\n";
+            return 2;
+        }
+        try {
+            shoot(player_b, player_a);
+        } catch(const std::runtime_error &e) {
+            std::cerr << "Spieler A hat gewonnen! (Illegaler Zug von B)\n";
+            return 1;
+        }
+    } while (player_a.alive() && player_b.alive());
 
-    std::cerr << "Ende\n";
-    return 0;
+    // scoring
+    if (player_a.alive()) {
+        std::cerr << "Spieler A hat gewonnen!\n";
+        return 1;
+    } else if (player_b.alive()) {
+        std::cerr << "Spieler B hat gewonnen!\n";
+        return 2;
+    } else {
+        std::cerr << "Unentschieden ...\n";
+        return 0;
+    }
 }
-
