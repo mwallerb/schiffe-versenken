@@ -2,7 +2,6 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
-#include <mutex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -33,66 +32,11 @@ template <typename T> T monitored(T errcode)
     return errcode;
 }
 
-template <typename T>
-class CleanupRegistry
-{
-public:
-    CleanupRegistry() { }
-
-    ~CleanupRegistry() { cleanup(); }
-
-    void cleanup() {
-        std::lock_guard<std::mutex> guard(_mutex);
-        for (T *elem : _registry)
-            elem->~T();
-        _registry.clear();
-    }
-
-    void enroll(T *obj) {
-        std::lock_guard<std::mutex> guard(_mutex);
-        _registry.emplace(obj);
-    }
-
-    void unenroll(T *obj) {
-        std::lock_guard<std::mutex> guard(_mutex);
-        _registry.erase(obj);
-    }
-
-private:
-    std::set<T *> _registry;
-    std::mutex _mutex;
-};
-
-template <typename Derived>
-class ExitCleanup
-{
-public:
-    ExitCleanup() { registry().enroll(derived()); }
-
-    ~ExitCleanup() { registry().unenroll(derived()); }
-
-private:
-    Derived *derived() { return reinterpret_cast<Derived *>(this); }
-
-    static CleanupRegistry<Derived> &registry() {
-        static CleanupRegistry<Derived> my_registry;
-        static int _unused_return = register_exit();
-        ++_unused_return;
-        return my_registry;
-    }
-
-    static int register_exit() {
-        std::at_quick_exit(exit_handler);
-        return 0;
-    }
-
-    static void exit_handler() {
-        registry().cleanup();
-    }
-};
+// list of all children ever created
+static std::vector<pid_t> all_children;
+static std::vector<int> all_pipes;
 
 class ChildProcess
-    : private ExitCleanup<ChildProcess>     // CRTP
 {
 public:
     ChildProcess() : _child_pid(-1), _fd_from_child(-1), _fd_to_child(-1) { }
@@ -128,6 +72,10 @@ public:
         monitored(close(from_child[1]));
         _fd_from_child = from_child[0];
         _fd_to_child = to_child[1];
+
+        all_children.push_back(_child_pid);
+        all_pipes.push_back(_fd_from_child);
+        all_pipes.push_back(_fd_to_child);
     }
 
     ~ChildProcess() {
@@ -487,6 +435,22 @@ void shoot(Player &me, Player &other)
 
 extern "C" void signal_handler(int)
 {
+    // We kill all children and all pipes here for cleanup
+    int nkilled = 0, nclosed = 0;
+    for (pid_t pid : all_children) {
+        if(kill(pid, SIGKILL) == 0) {
+            monitored(waitpid(pid, NULL, 0));
+            ++nkilled;
+        }
+    }
+    for (int pipe : all_pipes) {
+        if(close(pipe) == 0)
+            ++nclosed;
+    }
+    if (nkilled || nclosed) {
+        std::cerr << "\nABORT: Killed " << nkilled << " subprocesses, closed "
+                  << nclosed << " pipes.\n";
+    }
     std::quick_exit(1);
 }
 
