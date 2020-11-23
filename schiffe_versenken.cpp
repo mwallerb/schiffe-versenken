@@ -1,6 +1,9 @@
 #include <algorithm>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <mutex>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <vector>
@@ -31,21 +34,77 @@ template <typename T> T monitored(T errcode)
     return errcode;
 }
 
-class ChildProcess
+template <typename T>
+class CleanupRegistry
 {
 public:
-    ChildProcess() : _child_pid(-1) { }
+    CleanupRegistry() { }
 
-    ChildProcess(std::string name) {
+    ~CleanupRegistry() { cleanup(); }
+
+    void cleanup() {
+        std::lock_guard<std::mutex> guard(_mutex);
+        for (T *elem : _registry)
+            elem->~T();
+        _registry.clear();
+    }
+
+    void enroll(T *obj) {
+        std::lock_guard<std::mutex> guard(_mutex);
+        _registry.emplace(obj);
+    }
+
+    void unenroll(T *obj) {
+        std::lock_guard<std::mutex> guard(_mutex);
+        _registry.erase(obj);
+    }
+
+private:
+    std::set<T *> _registry;
+    std::mutex _mutex;
+};
+
+template <typename Derived>
+class ExitCleanup
+{
+public:
+    ExitCleanup() { registry().enroll(derived()); }
+
+    ~ExitCleanup() { registry().unenroll(derived()); }
+
+private:
+    Derived *derived() { return reinterpret_cast<Derived *>(this); }
+
+    static CleanupRegistry<Derived> &registry() {
+        static CleanupRegistry<Derived> my_registry;
+        static int _unused_return = register_exit();
+        ++_unused_return;
+        return my_registry;
+    }
+
+    static int register_exit() {
+        std::at_quick_exit(exit_handler);
+        return 0;
+    }
+
+    static void exit_handler() {
+        registry().cleanup();
+    }
+};
+
+class ChildProcess
+    : private ExitCleanup<ChildProcess>     // CRTP
+{
+public:
+    ChildProcess() : _child_pid(-1), _fd_from_child(-1), _fd_to_child(-1) { }
+
+    ChildProcess(std::string name)
+        : ChildProcess()
+    {
         // First, make pipes: pipe[0] <--- pipe[1]
-        int to_child[2], from_child[2], safety_pipe[2];
-        char errormsg[100];
-
+        int to_child[2], from_child[2];
         checked(pipe(to_child));
         checked(pipe(from_child));
-        checked(pipe(safety_pipe));
-        checked(fcntl(safety_pipe[0], F_SETFD, FD_CLOEXEC));
-        checked(fcntl(safety_pipe[1], F_SETFD, FD_CLOEXEC));
 
         // Then, fork
         _child_pid = checked(fork());
@@ -60,8 +119,8 @@ public:
             execl(name.c_str(), name.c_str(), NULL);
 
             // This will only be reached if exec fails
-            strncpy(errormsg, strerror(errno), sizeof(errormsg));
-            write(safety_pipe[1], errormsg, sizeof(errormsg));
+            std::cerr << "Fehler beim starten von '" << name << "': "
+                      << strerror(errno) << std::endl;
             exit(47);
         }
 
@@ -70,31 +129,22 @@ public:
         monitored(close(from_child[1]));
         _fd_from_child = from_child[0];
         _fd_to_child = to_child[1];
-
-        // Attempt at portably guessing when child fails ... this can be
-        // brittle due to scheduling delays, however :(
-        pollfd poll_info;
-        poll_info.fd = safety_pipe[0];
-        poll_info.events = POLLIN;
-        if (checked(poll(&poll_info, 1, 100)) > 0) {
-            monitored(read(safety_pipe[0], errormsg, sizeof(errormsg)));
-            monitored(close(_fd_from_child));
-            monitored(close(_fd_to_child));
-            throw std::runtime_error(
-                    "Fehler beim Ausführen von '" + name + "': " + errormsg);
-        }
-        checked(close(safety_pipe[0]));
-        checked(close(safety_pipe[1]));
     }
 
     ~ChildProcess() {
-        if (_child_pid < 0)
-            return;
-
-        monitored(close(_fd_from_child));
-        monitored(close(_fd_to_child));
-        if(monitored(kill(_child_pid, SIGKILL)) == 0)
+        if (_fd_from_child >= 0) {
+            monitored(close(_fd_from_child));
+            _fd_from_child = -1;
+        }
+        if (_fd_to_child >= 0) {
+            monitored(close(_fd_to_child));
+            _fd_to_child = -1;
+        }
+        if (_child_pid >= 0) {
+            monitored(kill(_child_pid, SIGKILL));
             monitored(waitpid(_child_pid, NULL, 0));
+            _child_pid = -1;
+        }
     }
 
     // copy-and-swap idiom
@@ -436,8 +486,18 @@ void shoot(Player &me, Player &other)
     }
 }
 
+extern "C" void signal_handler(int)
+{
+    std::quick_exit(1);
+}
+
 int main(int argc, char *argv[])
 {
+    // register signal handlers
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+    signal(SIGHUP, signal_handler);
+
     // handle arguments
     std::vector<std::string> args(argv, argv + argc);
     if (args.size() != 3) {
