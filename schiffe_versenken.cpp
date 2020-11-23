@@ -139,7 +139,6 @@ public:
             }
             buffer[nbytes] = 0;
             _buffer += std::string(buffer);
-            return getline(maxlen, timeout);
         }
         throw std::runtime_error(
                         "Das Spieler-Programm gibt zu lange Zeilen aus");
@@ -174,7 +173,7 @@ public:
         , _child(std::move(child))
         , _live(0)
     {
-        std::fill(_board[0], _board[10], ' ');
+        std::fill_n(&_board[0][0], 100, ' ');
     }
 
     bool is_machine() const { return _child.started(); }
