@@ -11,7 +11,6 @@
 
 // C and POSIX headers
 #include <errno.h>
-#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdio.h>
@@ -119,7 +118,7 @@ public:
             execl(name.c_str(), name.c_str(), NULL);
 
             // This will only be reached if exec fails
-            std::cerr << "Fehler beim starten von '" << name << "': "
+            std::cerr << "\nFEHLER beim Ausführen von `" << name << "': "
                       << strerror(errno) << std::endl;
             exit(47);
         }
