@@ -1,3 +1,16 @@
+/*
+ * Implementierung des Spiels "Schiffe versenken".
+ *
+ * Sie muessen diesen Programmcode NICHT VERSTEHEN - es implementiert lediglich
+ * die Spiellogik und die Kommunikation mit einem Menschen bzw. IHREM Programm
+ * laut der Spezifikation in der Angabe.
+ *
+ * Kompilieren Sie das Programm wie folgt:
+ *
+ *     g++ -std=c++11 -o schiffe_versenken schiffe_versenken.cpp
+ *
+ * Autor: Markus Wallerberger
+ */
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
