@@ -155,7 +155,7 @@ public:
     }
 
     void send(const std::string &input) const {
-        checked(write(_fd_to_child, input.c_str(), input.size() + 1));
+        checked(write(_fd_to_child, input.c_str(), input.size()));
     }
 
     int from_child_fd() const { return _fd_from_child; }
