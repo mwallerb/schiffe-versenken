@@ -51,8 +51,9 @@ class Tee {
 public:
     Tee(std::ostream *out) : _out(out), _in_buf() { }
 
-    void add_input(size_t maxlen=200, const std::string &prefix="",
-                   const std::string &suffix="") {
+    int add_input(size_t maxlen=200, const std::string &prefix="",
+                  const std::string &suffix="") {
+        const std::lock_guard<std::mutex> lock(_in_mutex);
         _in_buf.push_back(InputBuffer(this, maxlen, prefix, suffix));
 
         // ostream do not allow copying or moveing, so we have to wrap them
@@ -60,6 +61,7 @@ public:
         // lifecycle
         std::ostream *ostream_ptr = new std::ostream(&_in_buf.back());
         _in.emplace_back(std::unique_ptr<std::ostream>(ostream_ptr));
+        return _in.size() - 1;
     }
 
     std::ostream &in(int n) const { return *_in[n]; }
@@ -122,7 +124,7 @@ protected:
 
 private:
     std::ostream *_out;
-    std::mutex _out_mutex;
+    std::mutex _in_mutex, _out_mutex;
     std::vector<InputBuffer> _in_buf;
     std::vector<std::unique_ptr<std::ostream>> _in;
 };
