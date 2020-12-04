@@ -279,16 +279,35 @@ public:
 
 private:
     bool _has_alive_ship(int r, int c) {
-        if (_board[r][c] == 'S') {
+        if (_board[r][c] == 'S')
             return true;
-        } else if (_board[r][c] != 'X') {
+        if (_board[r][c] != 'X')
             return false;
-        } else {
-            return (r > 0 && _board[r-1][c] == 'S')
-                || (r < 9 && _board[r+1][c] == 'S')
-                || (c > 0 && _board[r][c-1] == 'S')
-                || (c < 9 && _board[r][c+1] == 'S');
+        for (int rr = r-1; rr >= 0; --rr) {
+            if (_board[rr][c] == 'S')
+                return true;
+            if (_board[rr][c] != 'X')
+                break;
         }
+        for (int rr = r+1; rr <= 9; ++rr) {
+            if (_board[rr][c] == 'S')
+                return true;
+            if (_board[rr][c] != 'X')
+                break;
+        }
+        for (int cc = c-1; cc >= 0; --cc) {
+            if (_board[r][cc] == 'S')
+                return true;
+            if (_board[r][cc] != 'X')
+                break;
+        }
+        for (int cc = c+1; cc <= 9; ++cc) {
+            if (_board[r][cc] == 'S')
+                return true;
+            if (_board[r][cc] != 'X')
+                break;
+        }
+        return false;
     }
 
     char _which;
