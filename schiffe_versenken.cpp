@@ -15,9 +15,11 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <set>
-#include <sstream>
 #include <stdexcept>
+#include <sstream>
+#include <streambuf>
 #include <vector>
 #include <iomanip>
 
@@ -44,6 +46,86 @@ template <typename T> T monitored(T errcode)
         std::cerr << strerror(errno) << std::endl;
     return errcode;
 }
+
+class Tee {
+public:
+    Tee(std::ostream *out) : _out(out), _in_buf() { }
+
+    void add_input(size_t maxlen=200, const std::string &prefix="",
+                   const std::string &suffix="") {
+        _in_buf.push_back(InputBuffer(this, maxlen, prefix, suffix));
+
+        // ostream do not allow copying or moveing, so we have to wrap them
+        // inside of a unique_ptr that ensures destruction at the end of the
+        // lifecycle
+        std::ostream *ostream_ptr = new std::ostream(&_in_buf.back());
+        _in.emplace_back(std::unique_ptr<std::ostream>(ostream_ptr));
+    }
+
+    std::ostream &in(int n) const { return *_in[n]; }
+
+    std::ostream &out() const { return *_out; }
+
+
+protected:
+    class InputBuffer : public std::streambuf {
+    public:
+        InputBuffer(Tee *out, size_t maxlen, const std::string &prefix,
+                    const std::string &suffix)
+            : _out(out)
+            , _maxlen(maxlen)
+            , _prefix(prefix)
+            , _suffix(suffix)
+            , _buf()
+        { }
+
+    protected:
+        virtual int sync() {
+            _buf += _suffix;
+            _out->write_synced(_buf);
+            _buf = _prefix;
+            return 0;  // success
+        }
+
+        virtual int overflow(int c = EOF) {
+            if (c == EOF || c < 0 || c >= 256)
+                return EOF;
+
+            // MAC line endings
+            if (_buf.back() == '\r' && c != '\n')
+                sync();
+            _buf += static_cast<char>(c);
+            if (c == '\n')
+                sync();
+            if (_buf.size() == _maxlen) {
+                _buf += " ...\n";
+                sync();
+                _buf += "... ";
+            }
+            return c;
+        }
+
+    private:
+        Tee *_out;
+        size_t _maxlen;
+        std::string _prefix, _suffix;
+        std::string _buf;
+    };
+
+    void write_synced(const std::string &w) {
+        const std::lock_guard<std::mutex> out_lock(_out_mutex);
+        (*_out) << w;
+        _out->flush();
+    }
+
+    friend class InputBuffer;
+
+private:
+    std::ostream *_out;
+    std::mutex _out_mutex;
+    std::vector<InputBuffer> _in_buf;
+    std::vector<std::unique_ptr<std::ostream>> _in;
+};
 
 // list of all children ever created
 static std::vector<pid_t> all_children;
