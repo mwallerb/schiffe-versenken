@@ -176,6 +176,10 @@ private:
 class Player
 {
 public:
+    enum Outcome {
+        MISS, HIT, SUNK
+    };
+
     Player() : _which('x') { }
 
     Player(char which, ChildProcess &&child = ChildProcess())
@@ -256,7 +260,7 @@ public:
         _live += size;
     }
 
-    bool incoming(int r, int c) {
+    Outcome incoming(int r, int c) {
         if (r < 0 || r > 9)
             throw std::runtime_error("Ungueltige Zeile");
         if (c < 0 || c > 9)
@@ -265,15 +269,28 @@ public:
         if (_board[r][c] == 'S') {
             _board[r][c] = 'X';
             --_live;
-            return true;
+            return _has_alive_ship(r, c) ? HIT : SUNK;
         } else {
             if (_board[r][c] == ' ')
                 _board[r][c] = 'o';
-            return false;
+            return MISS;
         }
     }
 
 private:
+    bool _has_alive_ship(int r, int c) {
+        if (_board[r][c] == 'S') {
+            return true;
+        } else if (_board[r][c] != 'X') {
+            return false;
+        } else {
+            return (r > 0 && _board[r-1][c] == 'S')
+                || (r < 9 && _board[r+1][c] == 'S')
+                || (c > 0 && _board[r][c-1] == 'S')
+                || (c < 9 && _board[r][c+1] == 'S');
+        }
+    }
+
     char _which;
     ChildProcess _child;
     char _board[10][10];
@@ -396,13 +413,16 @@ void place(Player &me)
 void shoot(Player &me, Player &other)
 {
     bool am_human = !me.is_machine();
+    static const std::string outcomestr[] =
+                        {" - daneben. ", " - TREFFER! ", " - VERSENKT!"};
+    static const char outcomechar[] = {'F', 'T', 'V'};
 
     // Be nice to humans
     if (am_human)
         print_boards(std::cerr, me, other, false);
 
     std::string line;
-    bool treffer;
+    Player::Outcome treffer;
     int i, j;
     for (bool ok = false; !ok;) {
         std::cerr << "Spieler " << me.which() << " - Zielfeld eingeben: ";
@@ -433,17 +453,15 @@ void shoot(Player &me, Player &other)
         }
     }
     if (!am_human) {
-        std::cerr << i << " " << j
-            << (treffer ? " - TREFFER!" : " - daneben.")
-            << (other.is_machine() && me.which() == 'A' ? "  ---  " : "\n");
+        std::cerr << i << " " << j << outcomestr[treffer]
+                  << (other.is_machine() && me.which() == 'A' ? "  ---  " : "\n");
     }
-    if (!me.alive()) {
+    if (!me.alive())
         me.send('L');
-    } else if (treffer) {
-        me.send(other.alive() ? 'T' : 'W');
-    } else {
-        me.send('F');
-    }
+    else if (!other.alive())
+        me.send('W');
+    else
+        me.send(outcomechar[treffer]);
 }
 
 extern "C" void signal_handler(int)
