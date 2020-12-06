@@ -15,11 +15,8 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
-#include <mutex>
-#include <set>
-#include <stdexcept>
 #include <sstream>
-#include <streambuf>
+#include <stdexcept>
 #include <vector>
 #include <iomanip>
 
@@ -47,87 +44,72 @@ template <typename T> T monitored(T errcode)
     return errcode;
 }
 
-class Tee {
+class Pipe
+{
 public:
-    Tee(std::ostream *out) : _out(out), _in_buf() { }
+    enum Mode { CLOSED = 0, READ = 1, WRITE = 2 };
 
-    int add_input(size_t maxlen=200, const std::string &prefix="",
-                  const std::string &suffix="") {
-        const std::lock_guard<std::mutex> lock(_in_mutex);
-        _in_buf.push_back(InputBuffer(this, maxlen, prefix, suffix));
+    Pipe() : _fd(-1), _mode(CLOSED) { }
 
-        // ostream do not allow copying or moveing, so we have to wrap them
-        // inside of a unique_ptr that ensures destruction at the end of the
-        // lifecycle
-        std::ostream *ostream_ptr = new std::ostream(&_in_buf.back());
-        _in.emplace_back(std::unique_ptr<std::ostream>(ostream_ptr));
-        return _in.size() - 1;
+    Pipe(int fd, Mode mode) : _fd(fd), _mode(mode) { }
+
+    ~Pipe() {
+        if (_mode != CLOSED)
+            monitored(close(_fd));
     }
 
-    std::ostream &in(int n) const { return *_in[n]; }
+    Pipe(Pipe &&other) : Pipe() { swap(*this, other); }
 
-    std::ostream &out() const { return *_out; }
+    Pipe &operator=(Pipe &&other) { swap(*this, other); return *this; }
 
-
-protected:
-    class InputBuffer : public std::streambuf {
-    public:
-        InputBuffer(Tee *out, size_t maxlen, const std::string &prefix,
-                    const std::string &suffix)
-            : _out(out)
-            , _maxlen(maxlen)
-            , _prefix(prefix)
-            , _suffix(suffix)
-            , _buf()
-        { }
-
-    protected:
-        virtual int sync() {
-            _buf += _suffix;
-            _out->write_synced(_buf);
-            _buf = _prefix;
-            return 0;  // success
-        }
-
-        virtual int overflow(int c = EOF) {
-            if (c == EOF || c < 0 || c >= 256)
-                return EOF;
-
-            // MAC line endings
-            if (_buf.back() == '\r' && c != '\n')
-                sync();
-            _buf += static_cast<char>(c);
-            if (c == '\n')
-                sync();
-            if (_buf.size() == _maxlen) {
-                _buf += " ...\n";
-                sync();
-                _buf += "... ";
-            }
-            return c;
-        }
-
-    private:
-        Tee *_out;
-        size_t _maxlen;
-        std::string _prefix, _suffix;
-        std::string _buf;
-    };
-
-    void write_synced(const std::string &w) {
-        const std::lock_guard<std::mutex> out_lock(_out_mutex);
-        (*_out) << w;
-        _out->flush();
+    friend void swap(Pipe &left, Pipe &right) {
+        std::swap(left._fd, right._fd);
+        std::swap(left._mode, right._mode);
     }
 
-    friend class InputBuffer;
+    int read(std::vector<char> &buffer, int maxsize) {
+        if (_mode != READ)
+            throw std::runtime_error("pipe not open for READ");
+
+        size_t prevsize = buffer.size();
+        buffer.resize(prevsize + maxsize + 1);
+
+        int readsize = ::read(_fd, buffer.data() + prevsize, maxsize);
+        if (readsize < 0) {
+            // potential error condition
+            if (readsize == EAGAIN && readsize == EWOULDBLOCK)
+                readsize = 0;
+            else
+                throw std::runtime_error(
+                    "Das Spieler-Programm ist wahrscheinlich abgestürzt "
+                    "oder ist zu frueh fertig.\nFehler:"
+                    + std::string(strerror(errno)));
+        }
+
+        // add \0 for safety
+        buffer[prevsize + readsize] = '\0';
+        buffer.resize(prevsize + readsize);
+        return prevsize;
+    }
+
+    void write(std::string buffer) const {
+
+
+
+
+    }
+
+    int fd(Mode mode) const {
+        if (mode != _mode)
+            throw std::runtime_error("Wrong mode");
+        return _fd;
+    }
 
 private:
-    std::ostream *_out;
-    std::mutex _in_mutex, _out_mutex;
-    std::vector<InputBuffer> _in_buf;
-    std::vector<std::unique_ptr<std::ostream>> _in;
+    int _fd;
+    Mode _mode;
 };
+
 
 // list of all children ever created
 static std::vector<pid_t> all_children;
@@ -136,26 +118,35 @@ static std::vector<int> all_pipes;
 class ChildProcess
 {
 public:
-    ChildProcess() : _child_pid(-1), _fd_from_child(-1), _fd_to_child(-1) { }
+    ChildProcess()
+        : _child_pid(-1)
+        , _fd_from_child(-1)
+        , _fd_to_child(-1)
+        , _fd_err_child(-1)
+    { }
 
     ChildProcess(std::string name)
         : ChildProcess()
     {
         // First, make pipes: pipe[0] <--- pipe[1]
-        int to_child[2], from_child[2];
+        int to_child[2], from_child[2], err_child[2];
         checked(pipe(to_child));
         checked(pipe(from_child));
+        checked(pipe(err_child));
 
         // Then, fork
         _child_pid = checked(fork());
         if (_child_pid == 0) {
             // on child
             checked(dup2(to_child[0], STDIN_FILENO));
-            checked(dup2(from_child[1], STDOUT_FILENO));
             checked(close(to_child[0]));
             checked(close(to_child[1]));
+            checked(dup2(from_child[1], STDOUT_FILENO));
             checked(close(from_child[0]));
             checked(close(from_child[1]));
+            checked(dup2(err_child[1], STDERR_FILENO));
+            checked(close(err_child[0]));
+            checked(close(err_child[1]));
             execl(name.c_str(), name.c_str(), NULL);
 
             // This will only be reached if exec fails
@@ -167,12 +158,15 @@ public:
         // on parent
         monitored(close(to_child[0]));
         monitored(close(from_child[1]));
+        monitored(close(err_child[1]));
         _fd_from_child = from_child[0];
+        _fd_err_child = err_child[0];
         _fd_to_child = to_child[1];
 
         all_children.push_back(_child_pid);
         all_pipes.push_back(_fd_from_child);
         all_pipes.push_back(_fd_to_child);
+        all_pipes.push_back(_fd_err_child);
     }
 
     ~ChildProcess() {
@@ -183,6 +177,10 @@ public:
         if (_fd_to_child >= 0) {
             monitored(close(_fd_to_child));
             _fd_to_child = -1;
+        }
+        if (_fd_err_child >= 0) {
+            monitored(close(_fd_err_child));
+            _fd_err_child = -1;
         }
         if (_child_pid >= 0) {
             monitored(kill(_child_pid, SIGKILL));
@@ -205,6 +203,7 @@ public:
     bool started() const { return _child_pid >= 0; }
 
     std::string getline(int maxlen=200, int timeout=2000) const {
+        std::vector<char> linebuf(maxlen);
         for(int tries=0; tries != 3; ++tries) {
             size_t linesize = _buffer.find('\n');
             if (linesize != std::string::npos) {
@@ -213,26 +212,8 @@ public:
                 return line;
             }
 
-            pollfd poll_info;
-            poll_info.fd = _fd_from_child;
-            poll_info.events = POLLIN;
-
-            // The process has not returned any data :(
-            if (checked(poll(&poll_info, 1, timeout)) == 0) {
-                throw std::runtime_error(
-                    "Timeout: das Spieler-Programm hat innerhalb einiger Zeit "
-                    "keine Zeile geschrieben");
-            }
-
-            char buffer[maxlen+1];
-            int nbytes = read(_fd_from_child, buffer, maxlen);
-            if (nbytes <= 0) {
-                throw std::runtime_error(
-                    "Das Spieler-Programm ist wahrscheinlich abgestürzt "
-                    "oder ist zu frueh fertig");
-            }
-            buffer[nbytes] = 0;
-            _buffer += std::string(buffer);
+            read_from_pipe(linebuf, _fd_from_child, timeout);
+            _buffer += linebuf.data();
         }
         throw std::runtime_error(
                         "Das Spieler-Programm gibt zu lange Zeilen aus");
@@ -253,7 +234,7 @@ private:
     ChildProcess operator=(const ChildProcess &) = delete;
 
     pid_t _child_pid;
-    int _fd_from_child, _fd_to_child;
+    int _fd_from_child, _fd_to_child, _fd_err_child;
     mutable std::string _buffer;
 };
 
