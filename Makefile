@@ -1,14 +1,20 @@
-CXX=g++
-CXXFLAGS=-std=c++11 -Wall
+% : %.c
+	gcc -Wall -pedantic -lm -g -O -o $@ $<
 
-EXECS:=schiffe_versenken test_ki
+% : %.cpp
+	g++ -Wall -pedantic -lm -g -std=c++11 -O -o $@ $< 
 
-all: $(EXECS)
+%.o : %.c
+	gcc -Wall -pedantic -g -O -o $@ $<
 
-$(EXECS): %: %.cpp
-	$(CXX) $(CXXFLAGS) -o $@ $<
+clean :
+	rm */*.log */*.out */*.vrb */*.snm */*.toc */*.nav */*.synctex.gz _region_.* */*~ */*.aux *.log *.out *.vrb *.snm *.toc *.nav *.synctex.gz _region_.* *~ *.aux
 
-clean:
-	-rm -f $(EXECS)
+cloud:
+	cp -pu *.tex ~/ownCloud/EDV1_devel/
+	cp -pu *.pdf ~/ownCloud/EDV1_devel/
+	cp -pu Beispiele/*.* ~/ownCloud/EDV1_devel/Beispiele/
+	cp -pu figures/* ~/ownCloud/EDV1_devel/figures/
+	cp -pu exercises/* ~/ownCloud/EDV1_devel/exercises/
+	cp -pu Makefile ~/ownCloud/EDV1_devel/
 
-.PHONY: all clean
