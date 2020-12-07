@@ -49,15 +49,15 @@ class Pipe
 {
 public:
     static Pipe open() {
-        // First, make pipes: pipe[0] <--- pipe[1]
+        // pipe[0] <-- pipe[1]
         int fd[2];
         checked(pipe(fd));
-        return Pipe(fd, RW);
+        return Pipe(fd);
     }
 
     Pipe() : _fdread(-1), _fdwrite(-1) { }
 
-    Pipe(int fd[]) : _fdread(fd[0]), _fdwrite(fd[1]) { }
+    Pipe(const int fd[]) : _fdread(fd[0]), _fdwrite(fd[1]) { }
 
     Pipe(Pipe &&other) : Pipe() { swap(*this, other); }
 
@@ -69,17 +69,18 @@ public:
     }
 
     ~Pipe() {
-        if (_fdread >= 0)
-            monitored(::close(_fdread));
-        if (_fdwrite >= 0)
-            monitored(::close(_fdwrite));
+        try {
+            _close(true, true);
+        } catch(const std::runtime_error &e) {
+            std::cerr << e.what() << std::endl;
+        }
     }
 
-    int fdread() const { return _fdread; }
+    int fd_read() const { return _fdread; }
 
-    int fdwrite() const { return _fdwrite; }
+    int fd_write() const { return _fdwrite; }
 
-    int read(char *buffer, int bufsize) {
+    int read(char *buffer, int bufsize) const {
         if (_fdread < 0)
             throw std::runtime_error("Pipe not open for reading");
 
@@ -97,7 +98,7 @@ public:
         return nread;
     }
 
-    int write(const char *buffer, int bufsize) {
+    int write(const char *buffer, int bufsize) const {
         if (_fdwrite < 0)
             throw std::runtime_error("Pipe not open for writing");
 
@@ -111,32 +112,28 @@ public:
         return nwrite;
     }
 
-    void close_read() {
-        if (_fdread < 0)
-            throw std::runtime_error("Pipe is open for reading");
-        checked(::close(_fdread));
-        _fdread = -1;
-    }
+    void close_read() { _close(true, false); }
 
-    void close_write() {
-        if (_fdwrite < 0)
-            throw std::runtime_error("Pipe is open for writing");
-        checked(::close(_fdwrite));
-        _fdwrite = -1;
-    }
+    void close_write() { _close(false, true); }
 
-    void close() {
-        if (_fdread >= 0) {
-            checked(::close(_fdread));
-            _fdread = -1;
-        }
-        if (_fdwrite >= 0) {
-            checked(::close(_fdwrite));
-            _fdwrite = -1;
-        }
-    }
+    void close() { _close(true, true); }
 
 private:
+    void _close(bool read_end, bool write_end)  {
+        int rresult = 0, wresult = 0;
+        if (read_end && _fdread >= 0) {
+            rresult = ::close(_fdread);
+            _fdread = -1;
+        }
+        if (write_end && _fdwrite >= 0) {
+            wresult = ::close(_fdwrite);
+            _fdwrite = -1;
+        }
+        if (rresult < 0 || wresult < 0) {
+            throw std::runtime_error("Error closing pipe");
+        }
+    }
+
     int _fdread, _fdwrite;
 };
 
@@ -148,23 +145,20 @@ static std::vector<int> all_pipes;
 class ChildProcess
 {
 public:
-    ChildProcess() : _child_pid(-1), _fd_from_child(-1), _fd_to_child(-1) { }
+    ChildProcess() : _child_pid(-1) { }
 
     ChildProcess(std::string name)
-        : ChildProcess()
+        : _to_child(Pipe::open())
+        , _from_child(Pipe::open())
     {
-        // First, make pipes: pipe[0] <--- pipe[1]
-        Pipe to_child = Pipe::open();
-        Pipe from_child = Pipe::open();
-
-        // Then, fork
+            // Then, fork
         _child_pid = checked(fork());
         if (_child_pid == 0) {
             // on child
-            checked(dup2(to_child.read_fd(), STDIN_FILENO));
-            checked(dup2(from_child.write_fd(), STDOUT_FILENO));
-            to_child.close();
-            from_child.close();
+            checked(dup2(_to_child.fd_read(), STDIN_FILENO));
+            checked(dup2(_from_child.fd_write(), STDOUT_FILENO));
+            _to_child.close();
+            _from_child.close();
             execl(name.c_str(), name.c_str(), NULL);
 
             // This will only be reached if exec fails
@@ -174,25 +168,14 @@ public:
         }
 
         // on parent
-        monitored(close(to_child[0]));
-        monitored(close(from_child[1]));
-        _fd_from_child = from_child[0];
-        _fd_to_child = to_child[1];
-
+        _to_child.close_read();
+        _from_child.close_write();
         all_children.push_back(_child_pid);
-        all_pipes.push_back(_fd_from_child);
-        all_pipes.push_back(_fd_to_child);
+        all_pipes.push_back(_to_child.fd_write());
+        all_pipes.push_back(_from_child.fd_read());
     }
 
     ~ChildProcess() {
-        if (_fd_from_child >= 0) {
-            monitored(close(_fd_from_child));
-            _fd_from_child = -1;
-        }
-        if (_fd_to_child >= 0) {
-            monitored(close(_fd_to_child));
-            _fd_to_child = -1;
-        }
         if (_child_pid >= 0) {
             monitored(kill(_child_pid, SIGKILL));
             monitored(waitpid(_child_pid, NULL, 0));
@@ -206,9 +189,10 @@ public:
     ChildProcess &operator=(ChildProcess &&other) { swap(*this, other); return *this; }
 
     friend void swap(ChildProcess &left, ChildProcess &right) {
-        std::swap(left._child_pid, right._child_pid);
-        std::swap(left._fd_from_child, right._fd_from_child);
-        std::swap(left._fd_to_child, right._fd_to_child);
+        using std::swap;
+        swap(left._child_pid, right._child_pid);
+        swap(left._from_child, right._from_child);
+        swap(left._to_child, right._to_child);
     }
 
     bool started() const { return _child_pid >= 0; }
@@ -223,7 +207,7 @@ public:
             }
 
             pollfd poll_info;
-            poll_info.fd = _fd_from_child;
+            poll_info.fd = _from_child.fd_read();
             poll_info.events = POLLIN;
 
             // The process has not returned any data :(
@@ -234,13 +218,8 @@ public:
             }
 
             char buffer[maxlen+1];
-            int nbytes = read(_fd_from_child, buffer, maxlen);
-            if (nbytes <= 0) {
-                throw std::runtime_error(
-                    "Das Spieler-Programm ist wahrscheinlich abgestürzt "
-                    "oder ist zu frueh fertig");
-            }
-            buffer[nbytes] = 0;
+            int nbytes = _from_child.read(buffer, maxlen);
+            buffer[nbytes] = '\0';
             _buffer += std::string(buffer);
         }
         throw std::runtime_error(
@@ -248,12 +227,12 @@ public:
     }
 
     void send(const std::string &input) const {
-        checked(write(_fd_to_child, input.c_str(), input.size()));
+        _to_child.write(input.c_str(), input.size());
     }
 
-    int from_child_fd() const { return _fd_from_child; }
+    const Pipe &to_child() const { return _to_child; }
 
-    int to_child_fd() const { return _fd_to_child; }
+    const Pipe &from_child() const { return _from_child; }
 
     int child_pid() const { return _child_pid; }
 
@@ -262,7 +241,7 @@ private:
     ChildProcess operator=(const ChildProcess &) = delete;
 
     pid_t _child_pid;
-    int _fd_from_child, _fd_to_child;
+    Pipe _to_child, _from_child;
     mutable std::string _buffer;
 };
 
