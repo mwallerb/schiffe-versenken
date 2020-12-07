@@ -45,6 +45,102 @@ template <typename T> T monitored(T errcode)
     return errcode;
 }
 
+class Pipe
+{
+public:
+    static Pipe open() {
+        // First, make pipes: pipe[0] <--- pipe[1]
+        int fd[2];
+        checked(pipe(fd));
+        return Pipe(fd, RW);
+    }
+
+    Pipe() : _fdread(-1), _fdwrite(-1) { }
+
+    Pipe(int fd[]) : _fdread(fd[0]), _fdwrite(fd[1]) { }
+
+    Pipe(Pipe &&other) : Pipe() { swap(*this, other); }
+
+    Pipe &operator=(Pipe &&other) { swap(*this, other); return *this; }
+
+    void swap(Pipe &left, Pipe &right) {
+        std::swap(left._fdread, right._fdread);
+        std::swap(left._fdwrite, right._fdwrite);
+    }
+
+    ~Pipe() {
+        if (_fdread >= 0)
+            monitored(::close(_fdread));
+        if (_fdwrite >= 0)
+            monitored(::close(_fdwrite));
+    }
+
+    int fdread() const { return _fdread; }
+
+    int fdwrite() const { return _fdwrite; }
+
+    int read(char *buffer, int bufsize) {
+        if (_fdread < 0)
+            throw std::runtime_error("Pipe not open for reading");
+
+        int nread = ::read(_fdread, buffer, bufsize);
+        if (nread < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                nread = 0;
+            } else {
+                throw std::runtime_error(
+                    "Das Spieler-Programm ist wahrscheinlich abgestürzt "
+                    "oder ist zu frueh fertig.\n"
+                    "Fehler: " + std::string(strerror(errno)));
+            }
+        }
+        return nread;
+    }
+
+    int write(const char *buffer, int bufsize) {
+        if (_fdwrite < 0)
+            throw std::runtime_error("Pipe not open for writing");
+
+        int nwrite = ::write(_fdwrite, buffer, bufsize);
+        if (nwrite < 0) {
+            throw std::runtime_error(
+                "Das Spieler-Programm ist wahrscheinlich abgestürzt "
+                "oder ist zu frueh fertig.\n"
+                "Fehler: " + std::string(strerror(errno)));
+        }
+        return nwrite;
+    }
+
+    void close_read() {
+        if (_fdread < 0)
+            throw std::runtime_error("Pipe is open for reading");
+        checked(::close(_fdread));
+        _fdread = -1;
+    }
+
+    void close_write() {
+        if (_fdwrite < 0)
+            throw std::runtime_error("Pipe is open for writing");
+        checked(::close(_fdwrite));
+        _fdwrite = -1;
+    }
+
+    void close() {
+        if (_fdread >= 0) {
+            checked(::close(_fdread));
+            _fdread = -1;
+        }
+        if (_fdwrite >= 0) {
+            checked(::close(_fdwrite));
+            _fdwrite = -1;
+        }
+    }
+
+private:
+    int _fdread, _fdwrite;
+};
+
+
 // list of all children ever created
 static std::vector<pid_t> all_children;
 static std::vector<int> all_pipes;
@@ -58,20 +154,17 @@ public:
         : ChildProcess()
     {
         // First, make pipes: pipe[0] <--- pipe[1]
-        int to_child[2], from_child[2];
-        checked(pipe(to_child));
-        checked(pipe(from_child));
+        Pipe to_child = Pipe::open();
+        Pipe from_child = Pipe::open();
 
         // Then, fork
         _child_pid = checked(fork());
         if (_child_pid == 0) {
             // on child
-            checked(dup2(to_child[0], STDIN_FILENO));
-            checked(dup2(from_child[1], STDOUT_FILENO));
-            checked(close(to_child[0]));
-            checked(close(to_child[1]));
-            checked(close(from_child[0]));
-            checked(close(from_child[1]));
+            checked(dup2(to_child.read_fd(), STDIN_FILENO));
+            checked(dup2(from_child.write_fd(), STDOUT_FILENO));
+            to_child.close();
+            from_child.close();
             execl(name.c_str(), name.c_str(), NULL);
 
             // This will only be reached if exec fails
