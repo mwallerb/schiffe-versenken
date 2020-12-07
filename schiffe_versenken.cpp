@@ -14,7 +14,9 @@
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <list>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -44,6 +46,69 @@ template <typename T> T monitored(T errcode)
         std::cerr << strerror(errno) << std::endl;
     return errcode;
 }
+
+template <typename T>
+class Registered
+{
+public:
+    Registered() : _this_reg(publish(static_cast<T *>(this))) { }
+
+    Registered(const Registered &other) : Registered() { }
+
+    Registered &operator=(const Registered &other) { return *this; }
+
+    ~Registered() { retract(_this_reg); }
+
+    static void cleanup() {
+        std::list<T *> &registry = get_registry();
+        std::mutex &mutex = registry_mutex();
+
+        T *current;
+        size_t ncleaned;
+        for (ncleaned = 0; ; ++ncleaned) {
+            {
+                // Note that ~T() unregisters itself: we thus do not need to do
+                // that here, but we do have to avoid deadlocks to the mutex.
+                std::lock_guard<std::mutex> lock(mutex);
+                if (registry.empty())
+                    break;
+                current = registry.front();
+            }
+            current->~T();
+        }
+        if (ncleaned) {
+            std::cerr << "Cleaned " << ncleaned << " objects\n";
+        }
+    }
+
+private:
+    static std::list<T *> &get_registry() {
+        static std::list<T *> registry;           // thread-safe
+        return registry;
+    }
+
+    static std::mutex &registry_mutex() {
+        static std::mutex mutex;
+        return mutex;
+    }
+
+    static typename std::list<T *>::iterator publish(T *obj) {
+        std::list<T *> &registry = get_registry();
+        std::lock_guard<std::mutex> lock(registry_mutex());
+        //std::cerr << "[+]";
+        registry.push_back(obj);
+        return --registry.end();
+    }
+
+    static void retract(typename std::list<T *>::iterator pos) {
+        std::list<T *> &registry = get_registry();
+        std::lock_guard<std::mutex> lock(registry_mutex());
+        //std::cerr << "[-]";
+        registry.erase(pos);
+    }
+
+    typename std::list<T *>::iterator _this_reg;
+};
 
 class Pipe
 {
@@ -137,12 +202,8 @@ private:
     int _fdread, _fdwrite;
 };
 
-
-// list of all children ever created
-static std::vector<pid_t> all_children;
-static std::vector<int> all_pipes;
-
 class ChildProcess
+    : public Registered<ChildProcess>
 {
 public:
     ChildProcess() : _child_pid(-1) { }
@@ -170,9 +231,6 @@ public:
         // on parent
         _to_child.close_read();
         _from_child.close_write();
-        all_children.push_back(_child_pid);
-        all_pipes.push_back(_to_child.fd_write());
-        all_pipes.push_back(_from_child.fd_read());
     }
 
     ~ChildProcess() {
@@ -198,6 +256,7 @@ public:
     bool started() const { return _child_pid >= 0; }
 
     std::string getline(int maxlen=200, int timeout=2000) const {
+        std::vector<char> buffer(maxlen+1);
         for(int tries=0; tries != 3; ++tries) {
             size_t linesize = _buffer.find('\n');
             if (linesize != std::string::npos) {
@@ -217,10 +276,9 @@ public:
                     "keine Zeile geschrieben");
             }
 
-            char buffer[maxlen+1];
-            int nbytes = _from_child.read(buffer, maxlen);
+            int nbytes = _from_child.read(buffer.data(), maxlen);
             buffer[nbytes] = '\0';
-            _buffer += std::string(buffer);
+            _buffer += std::string(buffer.data());
         }
         throw std::runtime_error(
                         "Das Spieler-Programm gibt zu lange Zeilen aus");
@@ -557,22 +615,8 @@ void shoot(Player &me, Player &other)
 
 extern "C" void signal_handler(int)
 {
-    // We kill all children and all pipes here for cleanup
-    int nkilled = 0, nclosed = 0;
-    for (pid_t pid : all_children) {
-        if(kill(pid, SIGKILL) == 0) {
-            monitored(waitpid(pid, NULL, 0));
-            ++nkilled;
-        }
-    }
-    for (int pipe : all_pipes) {
-        if(close(pipe) == 0)
-            ++nclosed;
-    }
-    if (nkilled || nclosed) {
-        std::cerr << "\nABORT: Killed " << nkilled << " subprocesses, closed "
-                  << nclosed << " pipes.\n";
-    }
+    // Kill children and close associated pipes
+    Registered<ChildProcess>::cleanup();
     std::quick_exit(1);
 }
 
