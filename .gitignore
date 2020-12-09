@@ -4,6 +4,7 @@
 !.gitignore
 
 a.out
+*.o
 schiffe_versenken
 test_ki
 

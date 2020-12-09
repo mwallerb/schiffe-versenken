@@ -1,14 +1,26 @@
-% : %.c
-	gcc -Wall -pedantic -lm -g -O -o $@ $<
+CC:=gcc
+CXX:=g++
+LD:=g++
+CPPFLAGS:=
+CFLAGS:=-Wall -pedantic -g -O0
+CXXFLAGS:=-Wall -pedantic -g -O0 -std=c++11
+LDFLAGS:=-lm
 
-% : %.cpp
-	g++ -Wall -pedantic -lm -g -std=c++11 -O -o $@ $< 
+EXECS:=schiffe_versenken test_ki
 
-%.o : %.c
-	gcc -Wall -pedantic -g -O -o $@ $<
+all: $(EXECS)
 
-clean :
-	rm */*.log */*.out */*.vrb */*.snm */*.toc */*.nav */*.synctex.gz _region_.* */*~ */*.aux *.log *.out *.vrb *.snm *.toc *.nav *.synctex.gz _region_.* *~ *.aux
+%.o: %.c
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ -c $<
+
+%.o: %.cpp
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -o $@ -c $<
+
+$(EXECS): %: %.o
+	$(LD) $(LDFLAGS) -o $@ $<
+
+clean:
+	rm -f */*.log */*.out */*.vrb */*.snm */*.toc */*.nav */*.synctex.gz _region_.* */*~ */*.aux *.log *.out *.vrb *.snm *.toc *.nav *.synctex.gz _region_.* *~ *.aux
 
 cloud:
 	cp -pu *.tex ~/ownCloud/EDV1_devel/
@@ -17,4 +29,6 @@ cloud:
 	cp -pu figures/* ~/ownCloud/EDV1_devel/figures/
 	cp -pu exercises/* ~/ownCloud/EDV1_devel/exercises/
 	cp -pu Makefile ~/ownCloud/EDV1_devel/
+
+.PHONY: all clean cloud
 
