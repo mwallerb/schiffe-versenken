@@ -12,7 +12,6 @@
  * Autor: Markus Wallerberger
  */
 #include <algorithm>
-#include <cstdlib>
 #include <iostream>
 #include <list>
 #include <memory>
@@ -24,6 +23,7 @@
 #include <iomanip>
 
 // C and POSIX headers
+#include <stdlib.h>
 #include <errno.h>
 #include <poll.h>
 #include <signal.h>
@@ -32,6 +32,8 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+
+static const std::string VERSION = "1.1";
 
 template <typename T> T checked(T errcode)
 {
@@ -448,7 +450,7 @@ private:
 
 void print_usage(std::string name)
 {
-    std::cerr << "Verwendung:\n\n"
+    std::cerr << "Schiffe versenken v" << VERSION << ". Verwendung:\n\n"
               << "    " << name << " SPIELER_A SPIELER_B\n\n"
               << "Fuer SPIELER_A oder SPIELER_B kann eingesetzt werden:\n\n"
               << "    - 'mensch': Spieler spielt ueber die Tastatur\n"
@@ -616,8 +618,9 @@ void shoot(Player &me, Player &other)
 extern "C" void signal_handler(int)
 {
     // Kill children and close associated pipes
+    // std::quick_exit is not available on OSX - thanks Lorenz for finding this out!
     Registered<ChildProcess>::cleanup();
-    std::quick_exit(1);
+    _Exit(99);
 }
 
 int main(int argc, char *argv[])
