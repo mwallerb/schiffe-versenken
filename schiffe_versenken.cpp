@@ -34,6 +34,7 @@
 #include <sys/wait.h>
 
 static const std::string VERSION = "1.1";
+static const bool TOURNAMENT_MODE = true;
 
 template <typename T> T checked(T errcode)
 {
@@ -518,8 +519,11 @@ void place(Player &me)
 
         std::string line;
         for (bool ok = false; !ok;) {
-            std::cerr << "Spieler " << me.which()
-                      << " - Schiff #" << ship << " eingeben: ";
+            if (TOURNAMENT_MODE)
+                std::cerr << ":";
+            else
+                std::cerr << "Spieler " << me.which()
+                        << " - Schiff #" << ship << " eingeben: ";
             line = me.prompt();
             if (line.empty())
                 continue;
@@ -542,8 +546,8 @@ void place(Player &me)
                 }
                 me.place(i, j, 4, c == 'U');
                 ok = true;
-                if (!am_human)
-                    std::cerr << "[Erfolgreich eigegeben, aber geheim]\n";
+                //if (!am_human)
+                //    std::cerr << "[Erfolgreich eigegeben, aber geheim]\n";
             } catch(const std::runtime_error &e) {
                 if (am_human) {
                     std::cerr << "Eingabefehler Spieler " << me.which() << ":\n"
@@ -576,7 +580,8 @@ void shoot(Player &me, Player &other)
     Player::Outcome treffer;
     int i, j;
     for (bool ok = false; !ok;) {
-        std::cerr << "Spieler " << me.which() << " - Zielfeld eingeben: ";
+        if (!TOURNAMENT_MODE)
+            std::cerr << "Spieler " << me.which() << " - Zielfeld eingeben: ";
         line = me.prompt();
         if (line.empty())
             continue;
@@ -603,7 +608,7 @@ void shoot(Player &me, Player &other)
             }
         }
     }
-    if (!am_human) {
+    if (!am_human && !TOURNAMENT_MODE) {
         std::cerr << i << " " << j << outcomestr[treffer]
                   << (other.is_machine() && me.which() == 'A' ? "  ---  " : "\n");
     }
@@ -652,16 +657,14 @@ int main(int argc, char *argv[])
     try {
         place(player_a);
     } catch(const std::runtime_error &e) {
-        std::cerr << "\n\n" << e.what()
-                  << "\nSpieler B hat gewonnen! (Illegale Platzierung von A)\n";
+        std::cerr << "\nSpieler B hat gewonnen! (Illegale Platzierung von A)\n";
         return 2;
     }
     std::cerr << "\nSpieler B setzt Schiffe:\n";
     try {
         place(player_b);
     } catch(const std::runtime_error &e) {
-        std::cerr << "\n\n" << e.what()
-                  << "\nSpieler A hat gewonnen! (Illegale Platzierung von B)\n";
+        std::cerr << "\nSpieler A hat gewonnen! (Illegale Platzierung von B)\n";
         return 1;
     }
 
@@ -669,12 +672,15 @@ int main(int argc, char *argv[])
     // shootout phase
     for (int move = 1; player_a.alive() && player_b.alive(); ++move) {
         if (move == 101) {
-            std::cerr << "100 Züge gespielt - das ist genug.\n";
+            std::cerr << "\n100 Züge gespielt - das ist genug.\n";
             player_a.die();
             player_b.die();
             break;
         }
-        std::cerr << "Zug " << std::setw(3) << move << ": ";
+        if (TOURNAMENT_MODE)
+            std::cerr << ".";
+        else
+            std::cerr << "Zug " << std::setw(3) << move << ": ";
         try {
             shoot(player_a, player_b);
         } catch(const std::runtime_error &e) {
